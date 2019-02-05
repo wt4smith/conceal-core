@@ -229,6 +229,11 @@ inline void cryptonight_monero_tweak(uint64_t* mem_out, __m128i tmp)
 	mem_out[1] = vh;
 }
 
+inline __m128 _mm_set1_ps_epi32(uint32_t x)
+{
+	return _mm_castsi128_ps(_mm_set1_epi32(x));
+}
+
 template<bool SOFT_AES, cryptonight_algo ALGO>
 void cryptonight_hash(const void* input, size_t len, void* output, cn_context& ctx0)
 {
@@ -236,6 +241,7 @@ void cryptonight_hash(const void* input, size_t len, void* output, cn_context& c
 	constexpr uint32_t MASK = cn_select_mask<ALGO>();
 	constexpr uint32_t ITER = cn_select_iter<ALGO>();
 	constexpr bool MONERO_TWEAK = ALGO == CRYPTONIGHT_FAST_V8;
+	constexpr bool CONC_VARIANT = ALGO == CRYPTONIGHT_CONCEAL;
 
 	if(MONERO_TWEAK && len < 43)
 	{
@@ -261,6 +267,7 @@ void cryptonight_hash(const void* input, size_t len, void* output, cn_context& c
 	uint64_t al0 = h0[0] ^ h0[4];
 	uint64_t ah0 = h0[1] ^ h0[5];
 	__m128i bx0 = _mm_set_epi64x(h0[3] ^ h0[7], h0[2] ^ h0[6]);
+	__m128 conc_var = _mm_setzero_ps();
 
 	uint64_t idx0 = h0[0] ^ h0[4];
 	// Optim - 90% time boundary
@@ -268,7 +275,23 @@ void cryptonight_hash(const void* input, size_t len, void* output, cn_context& c
 	{
 		__m128i cx;
 		cx = _mm_load_si128((__m128i *)&l0[idx0 & MASK]);
-	
+
+		if(CONC_VARIANT)
+		{
+			__m128 r = _mm_cvtepi32_ps(cx);
+			__m128 c_old = conc_var;
+			r = _mm_add_ps(r, conc_var);
+			r = _mm_mul_ps(r, _mm_mul_ps(r, r));
+			r = _mm_and_ps(_mm_set1_ps_epi32(0x807FFFFF), r);
+			r = _mm_or_ps(_mm_set1_ps_epi32(0x40000000), r);
+			conc_var = _mm_add_ps(conc_var, r);
+
+			c_old = _mm_and_ps(_mm_set1_ps_epi32(0x807FFFFF), c_old);
+			c_old = _mm_or_ps(_mm_set1_ps_epi32(0x40000000), c_old);
+			__m128 nc = _mm_mul_ps(c_old, _mm_set1_ps(536870880.0f));
+			cx = _mm_xor_si128(cx, _mm_cvttps_epi32(nc));
+		}
+
 		if(SOFT_AES)
 			cx = soft_aesenc(cx, _mm_set_epi64x(ah0, al0));
 		else
